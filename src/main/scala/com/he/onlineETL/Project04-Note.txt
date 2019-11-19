@@ -1,0 +1,319 @@
+
+SparkStreaming采用Direct方式从Kafka Topic中读取数据，第二种方式API：
+  def createDirectStream[
+    K: ClassTag, // Topic中每条数据Key的类型，企业中为String
+    V: ClassTag, // Topic中每条数据Message的类型，企业中为String
+    KD <: Decoder[K]: ClassTag, // Kafka持久化数据解码器StringDecoder
+    VD <: Decoder[V]: ClassTag,// Kafka持久化数据解码器StringDecoder
+    // R -> 表示的Return的意思，此处表示处理每条Kafka Topic中数据以后得到值类型
+    R: ClassTag] ( 
+      ssc: StreamingContext,
+      kafkaParams: Map[String, String],
+      // 每次开始运行SparkStreaming应用时，Topics中各个分区Partition哪个偏移量开始读取数据
+      fromOffsets: Map[TopicAndPartition, Long],
+      // 如何处理从Topic中获取的每条数据，获取哪些值
+      messageHandler: MessageAndMetadata[K, V] => R
+  ): InputDStream[R] 
+
+
+MessageAndMetadata：
+	表示的将数据发送到Topic中存储以后，完整信息封装类（CaseClass），含如下信息：
+	Key, Value(Message), Partition（属于Topic哪个分区）, Offset（分区中偏移量）
+	有如下两个函数：
+		def key(): K 
+		def message(): V
+
+TopicAndPartition
+	表示的每个分区唯一标识，一个分区属于一个Topic，每个Topic有很多Partition分区
+	case class TopicAndPartition(topic: String, partition: Int)
+
+思考分析：
+	可以自己设置每次SparkStreaming运行时读取Kafka Topic中各个分区Partition的OFFSET值，方便做容灾恢复（当SparkStreaming实时应用宕机以后，再次启动时从上次消费的OFFSET继续读取数据，进行操作处理）
+	重点：
+		需要实时保存更新Topic中各个分区Partition的消费OFFSET信息。
+		-a. 可以存储Zookeeper中
+		-b. 可以存储Redis中    
+			演示将OFFSET存储Redis内存数据库中，使用哈希Hash数据类型
+			Key: STREAMIN_ETL_OFFSETS
+			Value:
+				topic_partition  -> offset
+				etlTopic_0 -> 0
+				etlTopic_1 -> 0
+				etlTopic_2 -> 0
+		-c. 可以存储RDBMS中
+		-d. 可以存储HBase中
+
+========================================================================
+监控Zookeeper Cluster工具：
+	-a. taokeeper
+		ZooKeeper-Monitor，淘宝开源的，使用很少
+		https://github.com/alibaba/taokeeper
+	-b. zkui
+		Zookeeper UI Dashboard
+		A UI dashboard that allows CRUD operations on Zookeeper.
+		https://github.com/DeemOpen/zkui
+
+Kafka Cluster 监控工具：
+	-a. Kafka Monitor
+		领英公司linkedin
+		Monitor the availability of Kafka clusters with generated messages.
+		https://github.com/linkedin/kafka-monitor
+	-b. Kafka Eagle
+		https://github.com/smartloli/kafka-eagle
+		文档：https://ke.smartloli.org/
+		简单，易用，功能不强大
+	-c. kafka-manager
+		A tool for managing Apache Kafka.
+		https://github.com/yahoo/kafka-manager
+		功能强大，使用最为广泛
+
+========================================================================
+
+对于一个电商网站（互联网）公司来说
+	- 用户行为数据
+		- 用户网站浏览行为数据（最大的）
+		- 用户网站购买行为数据（利益数据）
+	- 用户/物品信息数据
+		基本属性信息数据
+
+
+大数据+机器学习（人工智能）
+	-a. 推荐系统（推荐引擎）
+		亚马逊网站（推荐系统鼻祖）、Netflix（让推荐系统平面化，贡献最大）
+	-b. 用户画像（数据仓库）
+		打标签（从某种意义上来说）
+		JD（京东） -> 360buy
+	-c. 风控系统
+		金融行业，支付宝
+		房产中介公司：
+			房源信息，经纪人（关联规则算法）
+
+Spark MLlib（机器学习库）
+	http://spark.apache.org/docs/2.2.0/ml-guide.html
+	使用Spark框架将长剑的机器学习算法实现，以供使用，类似Python语言中机器学习库SK-LEARN
+	-a. 基于RDD实现算法
+		将数据封装在RDD数据集中，应用到算法中训练模型，使用模型进行预测分析
+		http://spark.apache.org/docs/2.2.0/mllib-guide.html#mllib-rdd-based-api
+		org.apache.spark.mllib
+	-b. 基于DataFrame实现算法
+		将数据封装在DataFrame数据集中，应用到算法中训练模型，使用模型预测分析
+		http://spark.apache.org/docs/2.2.0/ml-guide.html
+		org.apache.spark.ml
+	MAVEN 依赖；
+	    <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-mllib_2.11</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+    包含算法（常用的，经典的，并行的训练算法，不是最全的）：
+    	-i. 分类算法（Classification） - 预测类别，离散值
+    		决策树、逻辑回归、支持向量机、朴素贝叶斯
+    		随机森林RF、梯度提升树GBT
+    	-ii. 回归算法（Regression）- 预测连续值
+    		决策树、线性回归（Lasso、RedgeRegression）
+    		随机森林RF、梯度提升树GBT
+    	-iii. 聚类算法（Clustering）
+    		K-Means（K-均值算法）
+    	-iv. 推荐算法（
+    		- 协同过滤算法
+    			Collaborative filtering
+    			使用ALS算法：交替最小二乘法
+    		- 关联规则算法（购物篮算法）
+    			Association Rules
+    			使用FP-growth，PrefixSpan
+
+
+电商网站/App/互联网类型公司：
+	- 搜索引擎
+		为用户提供最直接的检索物品方式
+	- 推荐引擎
+		为用户推荐一些物品，可能是用户感兴趣的，有一定喜好的
+	- 广告引擎
+		网站主要收益来源
+
+
+以亚马逊图书推荐为例：
+	Spark机器学习
+		-a. 推荐一：1 Product(Item)
+			经常一起购买的商品
+		-b. 推荐二：7 * 9 = 63 Product
+			浏览此商品的顾客也同时浏览
+		-c. 推荐三：7 * 15 = 105 Product
+			购买此商品的顾客也同时购买
+	信息：
+		-a. 基本信息：
+			总体书额外信息
+		-b. 商品描述
+			内容信息
+		-c. 买家评论
+			评论信息
+
+以JD商品推荐为例：
+	樱桃（Cherry）MX-BOARD 2.0 G80-3800 游戏办机械键
+	-a. 推荐一：人气配件
+		购买此Product同时购买Product
+	-b. 推荐二：针对不同配件
+		推荐TopKey个Product
+	-c. 推荐三：达人选购
+		购买最多类似Prodcut，推荐
+	-d. 推荐四：看了又看
+		同时浏览类似的Product
+	-e. 推荐五：键盘热销榜
+		同价位、同品牌、总排行
+
+
+推荐引擎：
+	通过探寻不同物品（产品Item、Product）或者不同用户之间的喜好的联系，用于预测用户喜好的物品。
+
+推荐系统本质：
+	寻找不同用户或者物品之间的"相似度"
+
+推荐系统的核心：
+	产品（商品Product、Item）
+	系统：产生记录用户行为数据（浏览数据和购买数据）
+	算法：推荐系统算法、分类、回归于聚类算法
+
+推荐系统组成：
+	- 数据
+	- 算法（online在线和offline离线）
+	- Message System -> Kafka
+		收集用户行为数据
+	- Search Engine
+		搜索引擎
+	- NoSQL 数据库
+		HBase、Redis存储物品的推荐数据，便于前段展示
+	- 分布式计算
+		对海量数据使用算法训练模型，分布式并行计算训练
+		Spark 框架为首选
+	- 效果评测
+		购买量、销售额是否增加
+
+
+========================================================================
+推荐算法（常见的，通用的）：
+	- 基于内容属性的推荐
+		依赖物品之间的属性相似来构建推荐关系
+		使用场景：
+			没有用户及用户行为数据，物品较多的情况下
+	- 基于画像的推荐
+		基于用户标签的推荐，关注于用户偏好信息
+	- 基于协同过滤的推荐
+		核心点：用户对物品行为数据
+		- 基于用户的协同过滤推荐（User-CF）
+			以用户为主，找到相似的用户，然后推荐相似用户的相关物品
+		- 基于物品的协同过滤推荐（Item-CF）
+			以物品为主，找到相关的物品，然后推荐相似物品
+		- 基于模型的协同过滤推荐（Model-CF）
+			用户对物品的评价为主，主要ALS、SVD
+		- 最近邻模型推荐
+			类似分类算法中K-NN（K-近邻算法）
+	- 基于关联规则的推荐
+		词汇：看过xxx的还看过，买过xxx的还买过
+		经典案例：啤酒与尿布故事
+		FP-Growth、PrefixSpan
+
+
+协同过滤推荐算法CF：
+	思想：
+		通过观察所有用户User给产品Product/Item的评价Rating来判断每个用户的喜好Favorite。
+	功能：
+		-1. 针对用户来说（User-CF）
+			推荐哪些图书给用户，你喜欢呢？你会购买哪些？
+		-2. 针对图书来说（Item-CF）
+			推荐给哪些用户？哪些用户会更加喜欢？
+
+
+用户对产品的评价（评分）Rating：
+	-a. 显示评价（评分、反馈）
+		分数越高，喜好程度越高
+		淘票票够购买电影票，观看电影以后，直接评分
+		使用滴滴打车付款以后，直接评分
+		评分是最直接和最直观的的，获取评分代价最高的
+	-b. 隐式评价（评分、反馈）
+		次数越多，某种程序上说，喜好程度越高
+		针对网易音乐网站来说，听某首歌次数
+		某个网站某类物品浏览次数
+		网站点击量，视频播放次数，音乐收藏次数
+
+Spark MLlib中协同过滤推荐算法：ALS算法
+	Data（User-Product-Rating）
+				|	-> Rating
+		ALS交替最小二乘法
+				|   -> ALS
+	矩阵分解（Matrix Factorization）模型
+					-> MatrixFactorizationModel 
+
+
+在ALS算法中将用户对产品的评价放在一个矩阵中
+	矩阵类似一个二维表格（行和列组成）
+	- 矩阵中的每一行
+		每个用户对所有产品的评价，有的有值，有的无值
+	- 矩阵中的每一列
+		每个产品被所有用户的评价，有的有值，有的无值 
+
+概念：
+	向量Vector -> 数组Array
+		稠密向量DenseVector：
+			值为非0的占50%以上，大多数
+		稀疏向量SparseVector：
+			值为0的50%以上，大多数
+	矩阵Matrix -> RDD 
+		矩阵就是有多个向量组成，可以说向量是一维矩阵
+		稀疏矩阵SparseMatrix和稠密矩阵DenseMatrix
+
+
+ALS（交替最小二乘法）算法核心：
+	将用户对产品的评价稀疏矩阵拆分为两个稠密因子矩阵
+		用户因子矩阵和产品因子矩阵
+	X(n*m)			=				U(n*k)     *  V(k*m)
+		n个用户对m个物品的评价矩阵		
+
+ALS算法训练数据得到的模型其实就是两个矩阵而已
+	Model = {UserFeaturesMatrix, ProductFeaturesMatrix}
+	算法参数：
+		迭代次数（交替次数）、特征值K选择
+
+
+机器学习算法中：
+	任何一个算法，目标函数和损失函数，针对ALS算法来说，RMSE值最小
+
+
+====================================================================
+1. 用户对物品评分封装Rating类中
+	case class Rating (
+    	user: Int,
+    	product: Int,
+    	rating: Double
+    )
+    其实就是Tuple3[Int, Int, Double]
+2. 算法名称ALS
+	-a. 针对显示评价数据训练函数：
+		def train(ratings: RDD[Rating], rank: Int, iterations: Int)
+	-b. 针对隐式评价数据训练函数：
+		def trainImplicit(ratings: RDD[Rating], rank: Int, iterations: Int)
+	-c. 解释参数：
+		- 第一个参数ratings：
+			一个RDD，里面的数据类型是Rating实例对象，表示某个用户对某个物品评价
+		- 第二个参数rank：
+			特征的数目
+			number of features to use (also referred to as the number of latent factors)
+		- 第三个参数iterations：
+			迭代的次数，官方默认值是10,
+			通过一个因子矩阵，交替计算得到另外一个引子矩阵，反复迭代
+3. 模型为MatrixFactorizationModel
+	- 预测：
+		某个用户对用物品评价
+		def predict(user: Int, product: Int): Double
+			user的特征向量 与 物品特征向量 点积
+	- 推荐物品：
+		为某个用户推荐topKey个物品
+		def recommendProducts(user: Int, num: Int): Array[Rating]
+			user的特征向量 与 所有的物品特征向量 点积，降序排序，获取Key
+	- 推荐用户：
+		为某个物品推荐topKey个用户
+		def recommendUsers(product: Int, num: Int): Array[Rating]
+			物品特征向量 与 所有的用户特征向量 点积，降序排序，获取Key
+	
+
+
+

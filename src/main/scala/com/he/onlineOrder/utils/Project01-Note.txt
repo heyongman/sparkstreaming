@@ -1,0 +1,203 @@
+
+主要内容：
+    以SparkStreaming实时流式计算分析为主，企业级应用和性能优化。
+    -a. 有状态统计分析和窗口统计分析
+        企业级使用
+    -b. 仿双十一（仿双十二）电商销售订单实时统计分析
+        -i. 模拟产生销售订单数据，发送到Kafka Topic中
+            Kafka Producer API
+        -ii. 实时统计分析销售订单数据数据
+            有状态的统计分析、有窗口统计分析
+        -iii. 存储NoSQL数据库
+            基于内存Key/Value对数据库Redis
+    -c. 实时应用性能优化
+        参数设置、资源分配和Job调度配置
+
+
+==========================================================
+1、SparkStreaming中实时数据统计分析（有状态的Stateful）
+    DStream[(Key, Value)].updateStateByKey
+        依据Key进行状态更新操作，针对每批次的数据，将相同的Key的Value值合并以后获取当前批次的状态，结合以前Key的状态更新
+    核心函数：
+        updateFunc: (Seq[V], Option[S]) => Option[S]
+        参数Seq[V]：
+            表示的是每批次中将相同Key的Value放在一个Seq中，以便更好聚合统计状态，V-> Value的类型
+        参数Option[S]:
+            表示的当前Key的以前的状态信息，依据实际需要定义状态的数据类型，S->StateType
+    发现问题：
+        -a. 当没有数据的时候，状态依然更新（值是不变的）
+            从应用实时性来说及程序性能考虑，不需要的
+            Spark 1.6开始，mapWithState函数
+                针对每批次中的每条数据更新状态，有状态的时候就更新，无状态的时候就不更新
+        -b. 当实时应用停止以后，再次运行的时候，没有继续消费在应用停止的时间段产生的数据数据和获取以前的状态信息，进行累加统计。
+            SparkStreaming HA（高可用性），当实时应用再次（非第一次）启动运行的时候，从检查点恢复状态（以便继续累加统计）和读取消费数据的信息（以便继续消费上次消费后的数据）。
+
+检查点Checkpointing：
+    http://spark.apache.org/docs/2.2.0/streaming-programming-guide.html#checkpointing
+    -a. 功能：
+        Checkpointing保存SparkStreaming信息数据，通常将检查点目录设置在HDFS文件系统目录中，以便应用再次运行的时候读取这些信息，恢复应用相关状态等。
+    -b. 保存信息：
+        -i. 元数据Metadata checkpointing：
+            Configuration配置信息：创建Streaming Application
+            DStream operations流的操作：DStream获取、转换处理和流的输出Output
+            Incomplete batches未完成批次的数据：如果是基于Receivers接收器接收数据，保存哪些接收数据未处理；如果Direct方式，记录消费Kafka Topic中每个分区Partition偏移量。
+        -ii. 数据Data checkpointing
+            状态的数据（updateStateByKey），多批次的数据RDD的存储
+    -c. 从检查点恢复运行Streaming Application：
+        -i. 当Streaming应用第一次运行的时候，创建新的StreamingContex，设置定义DStream操作和start启动应用
+        -ii. 当Streamign应用从失败（再次启动）恢复，从检查点目录中检查点数据构建StreamingContext。
+          def getOrCreate(
+            checkpointPath: String,
+            creatingFunc: () => StreamingContext,
+            hadoopConf: Configuration = SparkHadoopUtil.get.conf,
+            createOnError: Boolean = false
+          ): StreamingContext 
+          当检查检查点目录存在的时候，从检查点目录读取数据，构建StreamingContext，如不存在使用creatingFunc构建。
+
+mapWithState：Spark 1.6提供高性能状态更新函数
+    def mapWithState[StateType: ClassTag, MappedType: ClassTag](
+      spec: StateSpec[K, V, StateType, MappedType]
+    ): MapWithStateDStream[K, V, StateType, MappedType] 
+
+
+==========================================================
+模拟类似双十一，各个电商网站订单数据统计分析处理：
+    -1. 模拟产生订单数据，实时存储到Kafka Topic中 
+        编写程序，调用Kafka Producer API发送模拟订单数据到Topic中
+        订单数据格式：以JSON格式数据发送 -> String 
+        saleOrderTopic：
+            3个分区，2个副本
+    -2. 实时分析 
+        采用Direct方式从Kafka Topic中获取订单数据（JSON字符串），解析为Order（CaseClass），然后依据业务需要进行分析、处理、存储。
+        -a. 实时统计每日各个省份销售订单额 - Redis 
+            34 省、直辖市、自治区等
+        -b. 窗口统计最近二十分钟订单量最高的5个省份 - RDBMs
+            window函数使用，TopKey问题，集成SparkSQL分析
+    -3. 初步考虑程序性能优化问题
+        处理处理量、实时性
+
+def updateStateByKey[S: ClassTag](
+    /**
+        更新函数的参数说明：
+        a. 参数一
+            Time：表示的批处理时间BatchInterval
+        b. 参数二
+            K：表示的是当前要处理的Key
+        c. 参数三
+             Seq[V]：表示的当前Key的所有Value集合
+        d. 参数四
+            Option[S]：表示的是当前Key的以前状态
+    */
+    updateFunc: (Time, K, Seq[V], Option[S]) => Option[S],
+    partitioner: Partitioner,
+    rememberPartitioner: Boolean,
+    initialRDD: Option[RDD[(K, S)]] = None
+): DStream[(K, S)]
+
+
+-1. 创建订单数据的Topic
+    bin/kafka-topics.sh --create --zookeeper bigdata-training01.erongda.com:2181/kafka082 --replication-factor 2 --partitions 3 --topic saleOrderTopic
+-2. 模拟生产者Producer，向Topic中发送数据
+    bin/kafka-console-producer.sh --broker-list bigdata-training01.erongda.com:9092,bigdata-training01.erongda.com:9093,bigdata-training01.erongda.com:9094 --topic saleOrderTopic 
+-3. 从 Topic中消费数据
+    bin/kafka-console-consumer.sh --zookeeper bigdata-training01.erongda.com:2181/kafka082 --topic saleOrderTopic --from-beginning
+-4. 如何查看Kafka中Topic
+    bin/kafka-topics.sh --list --zookeeper bigdata-training01.erongda.com:2181/kafka082
+
+
+Scala语言编程中，贷出模式，有两类函数：
+    - 贷出函数（LoanFunction）：
+        资源管理，比如创建和关闭StreamingContex
+    - 用户函数（UserrFunction）：
+        真正业务逻辑处理编码的地方
+
+======================================================
+Redis ：
+    -a. NoSQL数据库，基于Key/Value存储数据库
+    -b. 官方网站：
+        https://redis.io/
+    -c. 下载地址：
+        http://download.redis.io/releases/
+    -d. 文档：
+        https://redis.io/documentation
+
+Redis 在Linux系统下安装：
+    -a. 安装系统依赖
+        $ sudo yum -y install gcc-c++
+    -b. 解压编译安装
+        $ chmod u+x redis-3.2.5.tar.gz
+        $ tar -zxf redis-3.2.5.tar.gz 
+        $ cd redis-3.2.5
+        $ make
+        $ make PREFIX=/opt/cdh-5.7.6/redis-3.2.5-bin install
+        拷贝配置文件至安装目录中
+        $ cp redis.conf ../redis-3.2.5-bin/
+    -c. 配置文件修改
+        通过配置文件中的注解可一直，启动Redis服务命令如下：
+            redis-server redis.conf
+        - 服务运行的主机名称(67行)
+            bind bigdata-training01.erongda.com
+        - 设置Redis服务作为守护进程运行（128行）
+            daemonize yes
+        - 指定Redis服务运行时产生日志文件（163行）
+            logfile "redis.log"
+    -d. 启动服务
+        $ bin/redis-server redis.conf
+    -e. CLI连接Redis数据库
+
+Redis中数据类型：
+    https://redis.io/topics/data-types-intro
+    指的是Value的数据类型，所有Key的数据类型都是String
+    -1. 字符串 类型
+        ""
+    -2. 列表 list   
+        链表
+    -3. 哈希Hash 
+        类似Java中HashMap或者Python语言中字典Dic
+    -4. 集合Set
+        类似Java中数学的集合Set，无序不重复
+    -5. Sorted Set
+        排序，不重复 
+
+针对实时统计销售额来说，数据类型选择：哈希hash
+    Key：
+        orders:total:price 
+    Value：
+        哈希Hash
+            15(bj) -> 300
+            10(sh) -> 150 
+    
+针对Java语言访问Redis数据库的Client：
+    https://redis.io/clients#java
+    Jedis：https://github.com/xetorthio/jedis
+    Maven 依赖：
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>2.8.0</version>
+        </dependency>
+
+=======================================================
+SparkStreaming程序运行优化：
+    -1. 当采用Direct方式拉取Kafka Topic中数据，设置最大消费数据量
+        spark.streaming.kafka.maxRatePerPartition
+            每秒钟获取Topic中每个分区的最大条目数，默认没设置
+    -2. 数据本地性等待时间设置
+        spark.locality.wait
+            RDD中每个分区数据处理的时候，考虑处理数据所在位置和需要资源的本地性，尽量达到最好的性能结果，为了实现 最好性能往往等待资源。
+            默认值为3秒，对于Streaming实时应用来说，3秒时间很长，无需太多考虑本地性计算，所以需要设置较小的值。
+    -3. SparkCore中性能优化，全部可以考虑使用
+        SparkStreaming底层处理就是针对RDD的处理，比如如下考虑：
+        -a. 设置Kryo序列化
+        -b. 使用xxPartition函数
+        -c. 使用aggregateByKey函数聚合，少使用groupByKey
+        ......
+    -4. 配置反压机制
+        程序自动依据每批次处理数据的时间，自动调整下一批次处理的数据量，以便在BatchInterval的时间范围内处理完每批次的数据，进行实时分析。
+        spark.streaming.backpressure.enabled
+            是否启用反压机制，可以设置为true
+    -5. 设置Driver和Executor中JVM GC策略及内存分配
+        spark.driver.extraJavaOptions:
+            针对Driver进程来说设置GC及堆栈内存初始化和分配
+        spark.executor.extraJavaOptions
+            针对Executor进程来说设置GC及堆栈内存初始化和分配

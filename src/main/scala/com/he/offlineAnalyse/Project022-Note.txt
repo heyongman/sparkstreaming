@@ -1,0 +1,66 @@
+
+
+第一点、优化项目
+	基于HADOOP生态系统框架离线数据分析（互联网电商公司数据分析）：
+	    驴妈妈2015年基于大数据技术对用户行为数据分析
+	-1. 每日网站用户行为日志数据ETL到HBase表中
+		EtlToHBaseSpark -> process_date
+			将每天产生的日志数据解析过滤清洗以后存入一张表
+		过程（直接加载）：
+			Data -> Put -> （WAL，此处跳过）MemStore -> StoreFile（HFile）
+		优化：
+			Data -> HFiles -> BulkLoad Table
+			参考org.apache.hadoop.hbase.mapreduce.ImportTsv
+		核心点：
+			将Data直接写出为HFile格式数据文件，需要设置
+				Puts in sorted order: Put对象进行排序操作
+					HBase表中按照RowKey进行自然升序进行排序，每条数据中，按照列名Column进行自然升序进行排序，写入到StoreFile中。
+			    job.setOutputKeyClass(ImmutableBytesWritable.class);
+			    job.setOutputValueClass(KeyValue.class);
+			    job.setOutputFormatClass(HFileOutputFormat2.class);
+
+HADOOP_HOME=/opt/cdh-5.7.6/hadoop-2.6.0-cdh5.7.6
+HBASE_HOME=/opt/cdh-5.7.6/hbase-1.2.0-cdh5.7.6
+HADOOP_CLASSPATH=`${HBASE_HOME}/bin/hbase classpath` \
+${HADOOP_HOME}/bin/hadoop jar ${HBASE_HOME}/lib/hbase-server-1.2.0-cdh5.7.6.jar
+
+	-2. 以针对新增用户统计分析业务为例，如何从HBase表中读取数据
+		NewInstallUserCountSpark -> process_date
+			按照不同维度进行统计某天日志数据的新增用户
+		优化：
+			能否直接读取HFile（存储在HDFS上）文件呢？？？对HBase Cluster压力减少很多，无需Client连接HBase RegionServer读取数据，底层读取文件数据。
+
+回顾一下：Spark框架读取HBase表几种方式
+	-a. 方式一：采用Scan方式扫描查询检索数据
+		SparkContext#newAPIHadoopRDD
+			TableInputFormat\ImmutableBytesWritable\Result
+		扫描表中所有的数据（RegionServer读取数据），进行过滤操作，代价比较高
+	-b. 方式二：直接读取表的HFiles数据文件
+		org.apache.hadoop.hbase.mapreduce.TableSnapshotInputFormat
+		-i. bypasses HBase servers
+			不会访问HBase RegionServer读取表中的数据
+		-ii. directly accesses the underlying files
+			直接访问底层存储的数据文件(hfile, recovered edits, wals)
+		此种方式需要对HBase Table中的数据创建快照Snapshot
+			创建快照以后，快照中的数据仅仅在快照那一刻的时候，如果后续表中新增数据，快照中是没有的，所有此种方式针对表中的数据不变的情况下，进行读取
+		加载表的快照所有数据，直接读取数据文件，RegionServer不参与
+	-c. 方式三：SparkSQL中提供External DataSource接口，读取数据的时候，进行优化
+		在HBase 框架中，有一个spark-hbase模块实现SparkSQL中外部数据源访问接口
+		<dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-spark</artifactId>
+            <version>1.2.0-cdh5.7.6</version>
+        </dependency>
+        接口：
+        	HBaseContext\hbaseRDD\bulkPut\bulkLoad
+        此种方式来说，相对于方式一来说，性能提升很多，在读取数据的时候，依据Scan中过滤条件，将会进行谓词下沉（Predit Pushdown），不会扫描加载表中所有数据。
+        作业：
+        	大家课后使用此种方式完成Spark与HBase表的数据交互操作
+
+HBase 数据库中快照相关命令说明：
+  Group name: snapshots
+  Commands: clone_snapshot, delete_all_snapshot, delete_snapshot, list_snapshots, restore_snapshot, snapshot
+演示：
+	hbase(main):006:0> snapshot 'ns1:sale_orders', 'snapshot_sale_orders'
+	hbase(main):007:0> list_snapshots
+

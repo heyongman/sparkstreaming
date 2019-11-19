@@ -1,0 +1,193 @@
+
+主要内容：
+    结合SparkCore（RDD）和HBase（Table）进行数据分析处理
+
+
+基于HADOOP生态系统框架离线数据分析（互联网电商公司数据分析）：
+    驴妈妈2015年基于大数据技术对用户行为数据分析
+    -a. 业务数据（核心）
+        用户访问网站（Web、App）行为日志数据，包含哪些类型数据：
+            - 点击数据（访问页面数据，浏览网页数据）
+            - 搜索数据（关键词）
+            - 第一次访问网站，加载数据，生成全局用户ID（guid）
+            - 订单数据（下订单，订单付款，订单退款，取消订单）
+    -b. 分析业务（核心）
+        不同纬度，不同业务需求针对用户访问行为数据进行分析：
+            每日、平台、浏览器等维度
+            - 针对<用户>分析
+                新增用户、总用户、活跃用户(依据规则定义指标)
+            - 针对<会员>分析
+                活跃会员、新增会员、总会员(依据规则定义指标)
+            - 会话Session分析
+                会话长度（会话PV）、会话长度（会话时长）
+            - Hourly分析
+                按照小时分析数据，活跃用户、会话个数、会话时长
+            - 事件分析
+                用户到网站上不同类型行为（不同事件），统计分析
+            - 订单分析
+                订单数量、订单金额
+                    总订单、支付成功订单、退款订单
+            - 地域信息分析
+                地域维度分析（国家、省份、城市）
+            - 外链信息分析
+                针对渠道进行分析，结合用户、会话等指标评估分析
+    -c. 项目架构（技术架构）
+        -i. 数据采集
+            获取数据（？） -> 存储数据（？）
+        -ii. 数据处理 
+            数据ETL（？） -> 数据分析（？，？，？）
+        -iii. 分析结果展示
+            结果数据存储（？）-> 前端展示（？）
+
+
+=========================================================
+架构师来说，项目架构三原则：
+    合适原则（符合项目需求）、简单原则（业务实现越简单越好）、演化原则（后期数据增长和业务发展，升级演化）
+
+项目架构：分为三层架构
+    基于CDH 5.x版本HADOOP生态组件，8台机器（32G、6TB、12Core）
+    - 数据采集 （使用第三方数据采集公司采集数据）
+        定制化收集数据，自定SDK（Java SDK，JsSDK，iOS SDK、Android SDK）
+        SDK -> Nginx -> 日志文件 -> Flume -> HDFS 
+        每台服务器，每天产生一个日志文件，数据量：20GB-30GB
+        数据格式：包含四个字段，每个字段之间使用^A分割
+            114.92.217.149^A1450569601.351^Abigdata-training02.hpsk.com^A/hpsk.jpg?u_nu=1&u_sd=6D4F89C0-E17B-45D0-BFE0-059644C1878D&c_time=1450569596991&ver=1&en=e_l&pl=website&sdk=js&b_rst=1440*900&u_ud=4B16B8BB-D6AA-4118-87F8-C58680D22657&b_iev=Mozilla%2F5.0%20(Windows%20NT%205.1)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F45.0.2454.101%20Safari%2F537.36&l=zh-CN&hpsk_sid=33cbf257-3b11-4abd-ac70-c5fc47afb797_11177014
+    - 数据处理 
+        - 数据预处理 - 数据ETL 
+            过滤清洗垃圾数据、转换数据格式
+            HDFS -> MapReduce/SparkCore -> HBase 
+        - 数据分析 
+            -a. 基于MapReduce/Spark 分析  -> 75%
+                HBase -> MR/Spark -> MySQL 
+            -b. 基于Hive/SparkSQL分析 -> 25% 
+                HBase -> Hive -> HiveQL -> SQOOP -> MySQL 
+                HBase -> SparkSQL -> MySQL 
+        - 分析结果展示：
+            SSM + MySQL + Maven + Git + HighCharts(ECharts)
+    - 项目架构分为二个阶段：
+        - 第一个阶段：纯离线数据分析
+            主要使用HADOOP（HDFS、MapReduce、YARN）和HBase、Hive完成存储分析，其他框架协助（Zookeeper、Hue、Oozie）
+        - 第二个阶段：离线+实时分析
+            重大技术升级：
+                以Spark框架为主分析结合Redis内存数据存储
+            - 凡是使用MapReduce框架替换为SparkCore
+            - 使用Hive分析替换升级为SparkSQL完成
+            - SparkStreaming实时分析（Kafka、Redis）
+
+
+=========================================================
+项目准备工作：
+    整个项目来说，属于离线日志分析，每天分析前一天数据，Flume实时采集数据。
+    a. 日志数据存储HDFS
+        HDFS 服务启动：NameNode/DataNode 
+        数据存储目录结构：
+            /datas/usereventlogs
+                /20151220
+                    20151220-server01.log
+                    20151220-server02.log
+                    20151220-server03.log
+                    20151220-server04.log
+                    20151220-server05.log
+                /20151221
+                /20151222
+                ..............
+        模拟结构：
+            $ bin/hdfs dfs -mkdir -p /datas/usereventlogs/
+            $ bin/hdfs dfs -mkdir -p /datas/usereventlogs/2015-12-20/
+            $ bin/hdfs dfs -put 20151220.log /datas/usereventlogs/2015-12-20
+    b. ETL 数据存储到HBase表中
+        Zookeeper 启动
+        HBase 服务启动
+            Java API -> 批量读数据，写数据到表中（Spark/MapReduce）
+        游戏公司，往往使用Python语言开发代码 
+            将游戏数据写入HBase表中，或从HBase表中读取数据 
+            bin/hbase-deamon.sh start thirft 
+    c. Spark 本地开发测试
+
+
+==========================================================
+SparkCore中核心概念（数据结构 ）
+    -a. 最核心：RDD
+        将要处理的数据封装在RDD分布式集合中，调用Transformation函数处理分析数据。
+    -b. 第二核心：共享变量Shared Variables
+        -i. Broadcast Variables
+            广播变量，将一个变量的值（非RDD）广播到Executor内存中，以便Task使用。
+        ii. Accumulators
+            累加器，就是计数器，只能ADD操作，比如统计输入数据的条目数，类似MapReducer中Counter。
+
+
+
+==========================================================
+HBase 数据库：
+    基于HDFS之上NoSQL、面向列存储的、多版本功能的海量数据存储的数据库
+        数十亿行数据 * 数百万列
+    两个功能：
+        - 存储数据 
+            每条数据字段类型可以不一样，数据量很大
+        - 检索数据
+            RowKey检查最快的
+    关键点：
+        如何这对业务合理设计RowKey
+    默认情况下，在创建的HBase表的时候，仅有一个Region，当批量加载数据到表中的时候，建议创建表的时候创建预分区Region。
+
+
+==========================================================
+ETL 日志数据到HBase表中，程序代码优化点：
+    -a. 创建表的时候
+        设置表的数据压缩（使用SNAPPY或LZ4）
+        创建预分区
+            实际的时候，估算统计每个小时数据量，选取时间作为预分区分割RowKey。
+            最好Regions数目多一点，均匀一点，减少Region分割
+        设置读取表中的数据不缓存
+            cache block
+    -b. 事件类型EventType过滤优化
+        使用广播变量，将集合列表广播出去，将数据发送到每个Executor一份，而不是每个Task一份数据
+    -c. 使用HFileOutputFormat
+        向HBase表中存储数据的时候，方式：
+            -i. Put方式
+                Put -> WAL -> MemStore -> StoreFile(HFile)
+                ETL过程，不需要WAL，提升写的性能，如下设置：
+                    put.setDurability(Durability.SKIP_WAL)
+                为了保证数据丢失，可以手动flush MemStore数据：
+                    admin.flush(TableName.valueOf(tableName))
+            -ii. HFile方式
+                Data -> HFile -> BulkLoad Table 
+        思考；
+            如何实现？？？
+            注意有很多陷进.................
+
+
+==========================================================
+分析需求：
+    新增用户 统计分析
+        第一次访问网站（这一天）就是一个新增用户
+            触发一个事件Event：lanch事件, en=e_l 
+    分析指标：需要结合维度来分析
+    -a. 时间维度
+        每条进行统计
+    -b. 平台维度（平台名称和版本）
+        浏览网站所使用的的平台（Web，iOS APP、Android APP等）
+    -c. 浏览器维度（浏览器名称和版本）
+        使用浏览器类型和版本
+
+    定义维度：
+        在实际企业数据分析中，对于单一维度分析毫无意义，通常多个维度合并分析，才更加的有意见。
+        -i. 基本维度分析
+            时间维度 + 平台维度
+        -ii. 基本维度 + 浏览器维度 
+            时间维度 + 平台维度 + 浏览器维度
+    
+    此业务来说，需要获取哪些字段数据，以供分析使用：
+    - en -> 过滤字段，事件类型，e_l 第一次加载网站
+    - s_time: 访问服务器的时间，用于获取时间维度
+    - version: 平台的版本
+    - pl: platform 平台的名称
+    - browserVersion：浏览器的名称
+    - browserName: 浏览器的名称
+    - uuid：用户ID，如果此字段的值为空，说明属于脏数据 ，不合格，过滤掉，不进行统计分析
+
+通过查看TableInputFormat源码发现：
+  /** Base-64 encoded scanner. All other SCAN_ confs are ignored if this is specified.
+   * See {@link TableMapReduceUtil#convertScanToString(Scan)} for more details.
+   */
+  public static final String SCAN = "hbase.mapreduce.scan";
